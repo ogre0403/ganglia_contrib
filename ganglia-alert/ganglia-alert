@@ -6,6 +6,7 @@ use Safe;
 use Data::Dumper;
 use Socket;
 use Carp;
+use Email::Send::SMTP::Gmail;
 use POSIX ":sys_wait_h";
 
 use Pod::Usage;
@@ -19,6 +20,8 @@ my $curdex = 0;				# history double-buffer index
 
 my $readlast=0;				# last time config was read
 my $alertm = 0;				# first alert-count modify time
+
+my $mail;
 
 my %opt;				# command-line options
 $opt{conf} = "/etc/ganglia-alert.conf";
@@ -48,6 +51,11 @@ if (!readconf()) {
 	die("Can't read $opt{conf} : $!\n");
 }
 
+
+$mail=Email::Send::SMTP::Gmail->new( -smtp=>'smtp.gmail.com',
+                                        -login=>"$conf{email_from}",
+                                        -pass=>"$conf{gmail_pw}");
+
 my $pid = 0;
 
 if (open(IN, $conf{pid_file})) {
@@ -61,7 +69,6 @@ if ($opt{kill} || $opt{report}) {
 	my $sig = $opt{kill} ? 2 : 1;
 	exit(kill($sig, 0+$pid)>0);
 }
-
 if ($opt{daemon}) {
 	# start daemon
 	if ($pid) {						# already running?
@@ -388,7 +395,7 @@ sub readconf {
 	if ($conf{email_to}) {
 		if (!$conf{sendmail_path}) {
 			eval {
-				require MIME::Lite;
+				require Email::Send::SMTP::Gmail;
 			};
 			if ($@) {
 				$conf{sendmail_path} = `which sendmail 2> /dev/null`;
@@ -420,6 +427,9 @@ sub fail {
 }
 
 sub msgq {
+    #my $ttt = time();
+    #xlog('debug',"alertm=$alertm, digest_secs=$conf{digest_secs}, time()=$ttt");
+	#if ($alertm > 0 && $alertm < ($ttt - $conf{digest_secs})) {
 	if ($alertm > 0 && $alertm < (time() - $conf{digest_secs})) {
 		my (%grid, %clus, %host);
 
@@ -498,10 +508,10 @@ sub msgq {
 			$subject =~ s/\$id\b/$id/g;
 		}
 		my $addr = $conf{email_to};
-		xlog("info", "sending email", "$subject");
+		xlog("info", "sending email!!", "$subject to $addr with $rpt");
 		if ($addr eq '-') {
 			printf STDERR "Would have sent email with subject: $subject\n";
-			$alertm = 0;
+			$alertm = time();
 		} else {
 			my $ok = 0;
 			if ($conf{email_to}) {
@@ -511,20 +521,13 @@ sub msgq {
 					$ok = $ok && print(SM "From: $from\nTo: $addr\nSubject: $subject\n\n$rpt");
 					$ok = $ok && close(SM);
 				} else {
-					my $msg = MIME::Lite->new(
-						From     => $from,
-						To       => $addr,
-						Subject  => $subject,
-						Type     => 'text/plain',
-						Data     => $rpt
-					);
-					$ok = $msg->send;
+                    $ok = $mail->send(-to=>$addr,   -subject=>$subject,   -verbose=>'1', -body=>$rpt);
 				}
 			} else {
 				$ok = 1;
 			}
 			if ($ok) {
-				$alertm = 0;	
+				$alertm = time();	
 			} else {
 				xlog("error", "Failed to send mail using " . ($conf{sendmail_path} ? "sendmail" : "MIME::Lite") . "\n");
 			}
